@@ -1,0 +1,7 @@
+# Линтер для всего проекта: desktop.py, backend/
+# Pytest в backend/ настраивается отдельно (backend/pyproject.toml)
+line-length = 100
+src = ["backend/src"]
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

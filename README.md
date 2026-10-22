@@ -1,5 +1,22 @@
-# Fandom Title Sorter
+# FandomTitleSorter
 
-Image classifier that parses data from reverse image search and sorts images based on their title/author/character
+Локальный сортировщик артов по фандомам, авторам и персонажам.
 
-For proper usage, if Danbooru/Gelbooru/yande.re/e-shuushuu/Zerochan/Anime-Pictures/Konachan is blocked in your country, use a VPN
+## Требования
+
+- Python 3.15+
+- Node.js и npm
+- Google Chrome
+
+## Установка
+
+```powershell
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+## Запуск
+
+```powershell
+.\venv\Scripts\python.exe desktop.py
+```
