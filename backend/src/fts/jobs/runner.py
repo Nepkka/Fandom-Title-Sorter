@@ -59,6 +59,8 @@ class RunOptions:
     sep_characters: bool = True
     move: bool = True
     use_saucenao: bool = True
+    use_iqdb: bool = True
+    use_tracemoe: bool = True
     limit: int | None = None
     min_similarity: float = 0.55
     review_below_confidence: float = 0.5
@@ -172,6 +174,14 @@ class Sorter:
         self._reachable = reachable
         return reachable
 
+    @staticmethod
+    def _engine_used(name: str, options: RunOptions) -> bool:
+        if name == Source.IQDB:
+            return options.use_iqdb
+        if name == Source.TRACEMOE:
+            return options.use_tracemoe
+        return True
+
     async def process(
         self,
         path: str,
@@ -282,6 +292,8 @@ class Sorter:
         if not self._knows_fandom(signals) and self._engines:
             for engine in self._engines:
                 name = str(getattr(engine, "name", "поиск"))
+                if not self._engine_used(name, options):
+                    continue
                 if name in self._skipped:
                     if name not in skipped:
                         skipped.append(name)
@@ -925,13 +937,16 @@ class Sorter:
         targets = self._named_first(targets, options)
         stats.total = len(targets)
         logger.info(
-            "сортировка %s: файлов %d, ввод %s, вывод %s, перемещение %s, SauceNAO %s",
+            "сортировка %s: файлов %d, ввод %s, вывод %s, перемещение %s, SauceNAO %s, "
+            "IQDB %s, trace.moe %s",
             run_id,
             stats.total,
             options.input_root,
             options.output_root,
             "да" if options.move else "нет",
             "да" if options.use_saucenao else "нет",
+            "да" if options.use_iqdb else "нет",
+            "да" if options.use_tracemoe else "нет",
         )
         await self._emit(on_event, events.BATCH, run_id, total=stats.total)
 

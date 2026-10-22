@@ -10,7 +10,6 @@ export interface Settings {
   input_root: string
   output_root: string
   sep_characters: boolean
-  use_saucenao: boolean
   concurrency: number
   limit: number
   saucenao_keys: string

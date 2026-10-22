@@ -7,7 +7,6 @@ const settings = ref<Settings | null>(null)
 const inputRoot = ref('')
 const outputRoot = ref('')
 const sepCharacters = ref(true)
-const useSaucenao = ref(true)
 const concurrency = ref(32)
 const limit = ref(0)
 const message = ref('')
@@ -22,7 +21,6 @@ async function load() {
     inputRoot.value = payload.input_root
     outputRoot.value = payload.output_root
     sepCharacters.value = payload.sep_characters
-    useSaucenao.value = payload.use_saucenao
     concurrency.value = payload.concurrency
     limit.value = payload.limit
     saucenaoKeys.value = payload.saucenao_keys
@@ -57,7 +55,6 @@ async function save() {
       input_root: inputRoot.value,
       output_root: outputRoot.value,
       sep_characters: sepCharacters.value,
-      use_saucenao: useSaucenao.value,
       concurrency: concurrency.value,
       limit: limit.value,
     })
@@ -90,10 +87,6 @@ onMounted(load)
         <label class="check">
           <input v-model="sepCharacters" type="checkbox" />
           раскладывать по персонажам
-        </label>
-        <label class="check">
-          <input v-model="useSaucenao" type="checkbox" />
-          использовать SauceNAO
         </label>
       </div>
       <h3>Скорость и лимиты</h3>

@@ -7,8 +7,9 @@ import type { JournalRun } from '../types'
 
 const inputRoot = ref('')
 const outputRoot = ref('')
-const move = ref(true)
 const useSaucenao = ref(true)
+const useIqdb = ref(true)
+const useTracemoe = ref(true)
 const rescanUnknown = ref(false)
 const running = ref(false)
 const stopping = ref(false)
@@ -136,7 +137,6 @@ async function load() {
   const settings = await api.settings()
   inputRoot.value = settings.input_root
   outputRoot.value = settings.output_root
-  useSaucenao.value = settings.use_saucenao
   const current = await api.currentJob()
   running.value = current.job?.status === 'running'
   const total = Number(current.job?.stats?.total ?? 0)
@@ -153,8 +153,10 @@ async function start() {
     const started = await api.startJob({
       input_root: inputRoot.value,
       output_root: outputRoot.value,
-      move: move.value,
+      move: true,
       use_saucenao: useSaucenao.value,
+      use_iqdb: useIqdb.value,
+      use_tracemoe: useTracemoe.value,
       rescan_unknown: rescanUnknown.value,
     })
     jobId.value = started.job_id
@@ -219,9 +221,14 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="row wrap toggles">
-        <label class="check"><input v-model="move" type="checkbox" /> перемещать файлы</label>
         <label class="check">
           <input v-model="useSaucenao" type="checkbox" /> использовать SauceNAO
+        </label>
+        <label class="check">
+          <input v-model="useIqdb" type="checkbox" /> использовать IQDB
+        </label>
+        <label class="check">
+          <input v-model="useTracemoe" type="checkbox" /> использовать trace.moe
         </label>
         <label class="check">
           <input v-model="rescanUnknown" type="checkbox" /> переискать «не найдено»

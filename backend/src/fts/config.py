@@ -27,7 +27,6 @@ class Settings(BaseSettings):
     fts_port: int = 0
     fts_api_token: str = ""
 
-    saucenao_enabled: bool = True
     saucenao_per_window: int = 3
     saucenao_window_seconds: int = 30
     saucenao_max_per_window: int = 12

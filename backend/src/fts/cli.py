@@ -171,6 +171,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         sep_characters=not args.flat,
         move=not args.no_move,
         use_saucenao=not args.no_saucenao,
+        use_iqdb=not args.no_iqdb,
+        use_tracemoe=not args.no_tracemoe,
         limit=args.limit,
         min_similarity=settings.fts_min_similarity,
         review_below_confidence=settings.fts_review_below_confidence,
@@ -335,6 +337,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--no-move", action="store_true", help="только разбор, без перемещения")
     run.add_argument("--no-saucenao", action="store_true")
+    run.add_argument("--no-iqdb", action="store_true")
+    run.add_argument("--no-tracemoe", action="store_true")
     run.add_argument("--flat", action="store_true", help="не раскладывать по персонажам")
     run.add_argument(
         "--concurrency",

@@ -49,6 +49,8 @@ class RunRequest(BaseModel):
     output_root: str
     move: bool = True
     use_saucenao: bool | None = None
+    use_iqdb: bool = True
+    use_tracemoe: bool = True
     sep_characters: bool | None = None
     limit: int | None = Field(default=None, ge=1)
     min_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -60,7 +62,6 @@ class SettingsPayload(BaseModel):
     input_root: str | None = None
     output_root: str | None = None
     sep_characters: bool | None = None
-    use_saucenao: bool | None = None
     concurrency: int | None = Field(default=None, ge=1, le=256)
     limit: int | None = Field(default=None, ge=0)
     saucenao_keys: str | None = None
@@ -310,8 +311,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "output_root": db.get_setting("output_root", settings.fts_output_root),
             "sep_characters": db.get_setting("sep_characters", str(settings.fts_sep_characters))
             == "True",
-            "use_saucenao": db.get_setting("use_saucenao", str(settings.saucenao_enabled))
-            == "True",
             "concurrency": int(
                 db.get_setting("concurrency", str(settings.fts_max_concurrency))
             ),
@@ -334,8 +333,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.set_setting("output_root", payload.output_root)
         if payload.sep_characters is not None:
             db.set_setting("sep_characters", str(payload.sep_characters))
-        if payload.use_saucenao is not None:
-            db.set_setting("use_saucenao", str(payload.use_saucenao))
         if payload.concurrency is not None:
             db.set_setting("concurrency", str(payload.concurrency))
             settings.fts_max_concurrency = payload.concurrency
@@ -445,11 +442,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 else db.get_setting("sep_characters", str(settings.fts_sep_characters)) == "True"
             ),
             move=payload.move,
-            use_saucenao=(
-                payload.use_saucenao
-                if payload.use_saucenao is not None
-                else db.get_setting("use_saucenao", str(settings.saucenao_enabled)) == "True"
-            ),
+            use_saucenao=payload.use_saucenao if payload.use_saucenao is not None else True,
+            use_iqdb=payload.use_iqdb,
+            use_tracemoe=payload.use_tracemoe,
             limit=payload.limit if payload.limit is not None else limit_from_settings,
             min_similarity=(
                 payload.min_similarity
