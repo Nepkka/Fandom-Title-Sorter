@@ -555,7 +555,6 @@ class Sorter:
         )
 
     def _knows_fandom(self, signals: list[SearchResult]) -> bool:
-        """Знаем, куда класть: есть фандом в словаре или автор для Original."""
         for signal in signals:
             if signal.artist_tags and signal.source is not Source.PIXIV:
                 return True
@@ -721,8 +720,8 @@ class Sorter:
     ) -> Decision | None:
         revision = self._db.rules_revision()
         for other_id, distance in self._phash_index().nearest(
-            phash, options.phash_distance
-        )[:NEIGHBOUR_LIMIT]:
+            phash, options.phash_distance, limit=NEIGHBOUR_LIMIT
+        ):
             if other_id == image_id:
                 continue
             stored = self._db.decision_for(other_id, revision)
@@ -925,13 +924,14 @@ class Sorter:
         run_id = uuid.uuid4().hex[:12]
         stats = RunStats(run_id=run_id)
 
-        targets = self._collect(options.input_root)
+        targets = await asyncio.to_thread(self._collect, options.input_root)
         deferred = [
             path
             for _image_id, path in self._db.queued()
             if os.path.exists(long_path(path))
         ]
-        targets = deferred + [path for path in targets if path not in set(deferred)]
+        deferred_set = set(deferred)
+        targets = deferred + [path for path in targets if path not in deferred_set]
         if options.limit is not None:
             targets = targets[: options.limit]
         targets = self._named_first(targets, options)

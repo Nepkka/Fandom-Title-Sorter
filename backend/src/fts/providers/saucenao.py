@@ -9,8 +9,14 @@ from collections.abc import Sequence
 from bs4 import BeautifulSoup
 
 from ..domain.models import Source
-from ..net.client import Fetched, Fetcher, fetch_routed
-from ..net.ratelimit import AdaptiveLimiter, BudgetExhausted, RollingWindow, SearchUnavailable
+from ..net.client import Fetched, Fetcher
+from ..net.ratelimit import (
+    AdaptiveLimiter,
+    BudgetExhausted,
+    RollingWindow,
+    SearchUnavailable,
+    route_key,
+)
 from .base import DiscoveryHit, absolute_url
 
 logger = logging.getLogger(__name__)
@@ -71,6 +77,7 @@ class SaucenaoEngine:
         self._gate = asyncio.Lock()
         self._next_at = 0.0
         self._blocked_until = 0.0
+        self._last_route: str | None = None
         self._clearance: dict[str, str] | None = None
         self._clearance_at = 0.0
         self._clearance_version = 0
@@ -119,12 +126,17 @@ class SaucenaoEngine:
         cache_key = f"saucenao:{phash}" if phash is not None else None
         if not self._keys:
             response = await self._search_without_key(image, cache_key)
+        elif not self._live_keys():
+            response = await self._search_without_key(image, cache_key, prefer_proxy=True)
         else:
             try:
                 response = await self._search_with_key(image, cache_key)
             except BudgetExhausted as error:
+                avoid: tuple[str | None, ...] = (self._last_route,)
                 try:
-                    response = await self._search_without_key(image, cache_key)
+                    response = await self._search_without_key(
+                        image, cache_key, avoid, prefer_proxy=True
+                    )
                 except (BudgetExhausted, SearchUnavailable) as keyless:
                     logger.info("SauceNAO: ключи кончились, без ключа тоже не вышло — %s", keyless)
                     raise error from keyless
@@ -135,9 +147,46 @@ class SaucenaoEngine:
             self.parse, response.text(), min_similarity=self._min_similarity
         )
 
-    def _headers(self) -> dict[str, str]:
+    def _routes(self) -> list[str | None]:
+        routes_for = getattr(self._fetcher, "routes_for", None)
+        if routes_for is None:
+            return [None]
+        return list(routes_for(SAUCENAO_HOST))
+
+    @staticmethod
+    def _proxy_first(routes: Sequence[str | None]) -> list[str | None]:
+        proxies = [route for route in routes if route is not None]
+        direct = [route for route in routes if route is None]
+        return proxies + direct
+
+    async def _route(
+        self,
+        routes: Sequence[str | None],
+        avoid: Sequence[str | None] = (),
+    ) -> str | None:
+        options = [route for route in routes if route not in avoid] or list(routes)
+        if not options:
+            raise BudgetExhausted(
+                "SauceNAO: нет доступного маршрута — напрямую закрыт, прокси не набраны"
+            )
+        if self._limiter is None:
+            return options[0]
+        return await self._limiter.acquire_route(options)
+
+    def _budget_left(self, routes: Sequence[str | None]) -> bool:
+        return self._limiter is None or self._limiter.any_budget_left(routes)
+
+    def _spend(self, route: str | None) -> None:
+        if self._limiter is not None:
+            self._limiter.budget.spend(route_key(route))
+
+    def _retire(self, route: str | None) -> None:
+        if self._limiter is not None:
+            self._limiter.exhaust_route(route)
+
+    def _headers(self, route: str | None = None) -> dict[str, str]:
         headers = {"Referer": SAUCENAO_ORIGIN}
-        if self._clearance is not None:
+        if route is None and self._clearance is not None:
             headers.update(self._clearance)
         return headers
 
@@ -146,23 +195,39 @@ class SaucenaoEngine:
             return False
         return self._clearance_version != version or await self._ensure_clearance()
 
-    def _give_up(self, reason: str) -> SearchUnavailable:
+    def _unblocked_routes(self, routes: Sequence[str | None]) -> list[str | None]:
+        if time.monotonic() >= self._blocked_until:
+            return list(routes)
+        return [route for route in routes if route is not None]
+
+    def _block_direct(self, reason: str) -> None:
         self._blocked_until = time.monotonic() + self.block_cooldown
-        logger.warning("SauceNAO: %s — пауза %d с", reason, int(self.block_cooldown))
-        return SearchUnavailable(f"SauceNAO: {reason}")
+        logger.warning(
+            "SauceNAO: %s — прямые запросы на паузе %d с",
+            reason,
+            int(self.block_cooldown),
+        )
 
     async def _search_with_key(self, image: bytes, cache_key: str | None) -> Fetched:
         cleared = False
+        routes = self._routes()
+        bad: set[str | None] = set()
+        next_avoid: tuple[str | None, ...] = ()
         while True:
-            if time.monotonic() < self._blocked_until:
+            routes = self._unblocked_routes(routes)
+            if not routes:
                 raise SearchUnavailable(
-                    "SauceNAO блокирует запросы (403) — файл отложен, попробуем позже"
+                    "SauceNAO блокирует прямые запросы (403) — файл отложен, попробуем позже"
                 )
-            if self._limiter is not None and self._limiter.budget.remaining("direct") <= 0:
+            if not self._budget_left(routes):
                 raise BudgetExhausted(
-                    "SauceNAO: суточный запас IP исчерпан (100 поисков в сутки на IP)"
+                    "SauceNAO: суточный запас исчерпан на всех маршрутах "
+                    "— добавь прокси или ключи в «Настройках»"
                 )
             key, window = await self._acquire_key()
+            route = await self._route(routes, bad | set(next_avoid))
+            next_avoid = ()
+            self._last_route = route
             await self._pace()
             version = self._clearance_version
             response = await self._fetcher.fetch(
@@ -176,75 +241,149 @@ class SaucenaoEngine:
                 },
                 files={"file": ("image.jpg", image, "image/jpeg")},
                 cache_key=cache_key,
-                headers=self._headers(),
+                headers=self._headers(route),
                 batch=1,
-                route=None,
+                route=route,
             )
             if response.status == 403:
+                if route is not None:
+                    self._retire(route)
+                    bad.add(route)
+                    if not self._budget_left(routes):
+                        raise BudgetExhausted(
+                            "SauceNAO: прокси под Cloudflare закончились — нужен новый пул"
+                        )
+                    continue
                 if await self._challenge(version, cleared):
                     cleared = True
                     continue
-                raise self._give_up("403 не снимается даже с cf_clearance")
+                self._block_direct("403 не снимается даже с cf_clearance")
+                bad.add(None)
+                routes = self._unblocked_routes(routes)
+                if not routes or all(item in bad for item in routes):
+                    raise SearchUnavailable(
+                        "SauceNAO: 403 не снимается даже с cf_clearance"
+                    )
+                continue
             if response.status != 429:
-                if self._limiter is not None and response.ok:
-                    self._limiter.budget.spend("direct")
+                if not response.ok:
+                    if self._limiter is not None:
+                        self._limiter.note_failure(route)
+                    bad.add(route)
+                    if all(item in bad for item in routes):
+                        return response
+                    continue
+                if not response.from_cache:
+                    self._spend(route)
                 return response
             text = response.text().lower()
             if "daily search limit" in text:
-                self._dead_keys.add(key)
                 if "ip based" in text or "your ip" in text:
-                    self._dead_keys.update(self._keys)
-                    if self._limiter is not None:
-                        self._limiter.exhaust_route("direct")
+                    self._retire(route)
                     logger.info(
-                        "SauceNAO: суточный пул IP исчерпан — все ключи делят один пул, "
-                        "остальные ключи больше не пробуем"
+                        "SauceNAO: суточный пул IP исчерпан на %s — переключаю прокси",
+                        route or "прямом адресе",
+                    )
+                else:
+                    self._dead_keys.add(key)
+                    logger.info(
+                        "SauceNAO: ключ %s исчерпан — переключаю прокси и беру следующий",
+                        key[:6],
+                    )
+                next_avoid = (route,)
+                if not self._budget_left(routes):
+                    raise BudgetExhausted(
+                        "SauceNAO: суточный запас исчерпан на всех маршрутах"
                     )
                 continue
             window.on_rate_limited()
+            if self._limiter is not None:
+                self._limiter.note_rate_limited(route)
+            bad.add(route)
+            if all(item in bad for item in routes):
+                return response
+            continue
 
-    async def _search_without_key(self, image: bytes, cache_key: str | None) -> Fetched:
+    async def _search_without_key(
+        self,
+        image: bytes,
+        cache_key: str | None,
+        avoid: Sequence[str | None] = (),
+        *,
+        prefer_proxy: bool = False,
+    ) -> Fetched:
         cleared = False
+        routes = self._routes()
+        if prefer_proxy:
+            routes = self._proxy_first(routes)
+        bad: set[str | None] = set(avoid)
+        response: Fetched | None = None
         while True:
-            if time.monotonic() < self._blocked_until:
+            routes = self._unblocked_routes(routes)
+            if not routes:
                 raise SearchUnavailable(
-                    "SauceNAO блокирует запросы (403) — файл отложен, попробуем позже"
+                    "SauceNAO блокирует прямые запросы (403) — файл отложен, попробуем позже"
                 )
+            if not self._budget_left(routes):
+                raise BudgetExhausted(
+                    "SauceNAO: суточный лимит без ключей исчерпан на всех IP"
+                )
+            route = await self._route(routes, bad)
+            self._last_route = route
             version = self._clearance_version
-            response = await fetch_routed(
-                self._fetcher,
-                self._limiter,
-                SAUCENAO_HOST,
+            response = await self._fetcher.fetch(
                 "POST",
                 SAUCENAO_URL,
                 data={"db": "999", "numres": str(self._numres), "output_type": "0"},
                 files={"file": ("image.jpg", image, "image/jpeg")},
                 cache_key=cache_key,
-                headers=self._headers(),
+                headers=self._headers(route),
                 batch=1,
-                routes=[None],
+                route=route,
             )
             if response.status == 403:
+                if route is not None:
+                    self._retire(route)
+                    bad.add(route)
+                    if all(item in bad for item in routes):
+                        return response
+                    continue
                 if await self._challenge(version, cleared):
                     cleared = True
                     continue
-                raise self._give_up("403 не снимается даже с cf_clearance")
-            if response.status != 429 or self._limiter is None:
-                break
-            self._limiter.note_rate_limited(response.proxy)
-            if "Daily Search Limit" in response.text():
-                self._limiter.exhaust_route(response.proxy)
-                raise BudgetExhausted(
-                    "SauceNAO: суточный лимит без ключей исчерпан на этом IP"
-                )
-            break
-
-        if self._limiter is not None and not response.from_cache:
+                self._block_direct("403 не снимается даже с cf_clearance")
+                bad.add(None)
+                routes = self._unblocked_routes(routes)
+                if not routes or all(item in bad for item in routes):
+                    raise SearchUnavailable(
+                        "SauceNAO: 403 не снимается даже с cf_clearance"
+                    )
+                continue
+            if response.status == 429:
+                if "daily search limit" in response.text().lower():
+                    self._retire(route)
+                    bad.add(route)
+                    if not self._budget_left(routes):
+                        raise BudgetExhausted(
+                            "SauceNAO: суточный лимит без ключей исчерпан на всех IP"
+                        )
+                    continue
+                if self._limiter is not None:
+                    self._limiter.note_rate_limited(route)
+                bad.add(route)
+                if all(item in bad for item in routes):
+                    return response
+                continue
             if not response.ok:
-                self._limiter.note_failure(response.proxy)
-            else:
-                self._limiter.note_success(response.proxy)
-        return response
+                if self._limiter is not None:
+                    self._limiter.note_failure(route)
+                bad.add(route)
+                if all(item in bad for item in routes):
+                    return response
+                continue
+            if self._limiter is not None and not response.from_cache:
+                self._limiter.note_success(route)
+            return response
 
     @staticmethod
     def parse(html: str, *, min_similarity: float = 0.0) -> list[DiscoveryHit]:
@@ -334,7 +473,6 @@ class SaucenaoEngine:
 
 
 def _handle_from_source(values: list[str]) -> str:
-    """Из строки «Source: Twitter @Norman_Maggot» — ник автора."""
     for value in values:
         match = _HANDLE_RE.search(value or "")
         if match:

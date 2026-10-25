@@ -53,7 +53,6 @@ def looks_like_challenge_body(body: str) -> bool:
 
 
 def hide_process_windows(pid: int) -> None:
-    """Спрятать окна процесса: браузер работает, но на экране ничего не видно."""
     if os.name != "nt" or not pid:
         return
     import ctypes
@@ -256,21 +255,22 @@ class BrowserTransport:
         waited = 0.0
         challenged = False
         while waited < self._timeout:
-            await asyncio.sleep(self._poll)
-            waited += self._poll
             try:
                 body = await tab.get_content()
             except Exception:
-                continue
-            if looks_like_challenge_body(body) and extract_payload(body) is None:
-                challenged = True
-                continue
-            payload = extract_payload(body)
-            if payload is not None:
-                if challenged:
-                    self.stats.challenges_passed += 1
-                self.stats.requests += 1
-                return (200, payload), tab
+                body = ""
+            if body.strip():
+                if looks_like_challenge_body(body) and extract_payload(body) is None:
+                    challenged = True
+                else:
+                    payload = extract_payload(body)
+                    if payload is not None:
+                        if challenged:
+                            self.stats.challenges_passed += 1
+                        self.stats.requests += 1
+                        return (200, payload), tab
+            await asyncio.sleep(self._poll)
+            waited += self._poll
         self.stats.failures += 1
         return None, tab
 

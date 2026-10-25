@@ -149,7 +149,6 @@ class AdaptiveLimiter:
         return window
 
     def allow_route(self, route: str | None) -> bool:
-        """Маршрут годен: есть и окно, и суточный запас именно у этого IP."""
         if self._budget.remaining(route_key(route)) <= 0:
             return False
         return self.window_for(route).try_acquire()

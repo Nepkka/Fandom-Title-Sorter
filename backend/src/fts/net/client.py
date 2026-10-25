@@ -84,7 +84,6 @@ class Fetched:
 
 
 def socks_remote_dns(proxy: str | None) -> str | None:
-    """SOCKS5 с удалённым DNS: имя хоста резолвит сам прокси, а не наш резолвер."""
     if proxy and proxy.startswith("socks5://"):
         return f"socks5h://{proxy[len('socks5://'):]}"
     return proxy
@@ -124,6 +123,7 @@ class Fetcher:
         self._cache = cache
         self._proxies: ProxyStrategy = proxies or NoProxy()
         self._clients: OrderedDict[str | None, httpx.AsyncClient] = OrderedDict()
+        self._client_refs: dict[str | None, int] = {}
         self._factory = client_factory or default_client_factory(settings)
         self._solver = solver
         self._browser = browser
@@ -183,19 +183,34 @@ class Fetcher:
         for client in self._clients.values():
             await client.aclose()
         self._clients.clear()
+        self._client_refs.clear()
         if self._browser is not None:
             await self._browser.aclose()
 
     def _client(self, proxy: str | None) -> httpx.AsyncClient:
+        self._client_refs[proxy] = self._client_refs.get(proxy, 0) + 1
         if proxy in self._clients:
             self._clients.move_to_end(proxy)
             return self._clients[proxy]
         client = self._factory(proxy)
         self._clients[proxy] = client
-        while len(self._clients) > MAX_CLIENTS:
-            _, evicted = self._clients.popitem(last=False)
-            asyncio.ensure_future(evicted.aclose())
         return client
+
+    def _release_client(self, proxy: str | None) -> None:
+        remaining = self._client_refs.get(proxy, 1) - 1
+        if remaining > 0:
+            self._client_refs[proxy] = remaining
+            return
+        self._client_refs.pop(proxy, None)
+        while len(self._clients) > MAX_CLIENTS:
+            idle = next(
+                (key for key in self._clients if self._client_refs.get(key, 0) <= 0),
+                None,
+            )
+            if idle is None:
+                return
+            evicted = self._clients.pop(idle)
+            asyncio.ensure_future(evicted.aclose())
 
     def _semaphore(self, host: str) -> asyncio.Semaphore:
         if host not in self._host_semaphores:
@@ -210,7 +225,6 @@ class Fetcher:
         return max(configured, min(available, self._settings.fts_per_host_cap))
 
     def routes_for(self, host: str) -> list[str | None]:
-        """Маршруты, которые берутся в работу для хоста: сначала напрямую, потом прокси."""
         return self._proxies.routes_for(host)
 
     async def _route_once(
@@ -232,21 +246,23 @@ class Fetcher:
                 response = await client.request(
                     method, url, params=params, data=data, files=files, headers=headers
                 )
+            self._note(
+                host, proxy, ok=True, latency_ms=int((time.monotonic() - started) * 1000)
+            )
+            return Fetched(
+                status=response.status_code,
+                content=response.content,
+                url=str(response.url),
+                proxy=proxy,
+                elapsed=time.monotonic() - started,
+                headers=dict(response.headers),
+            )
         except NETWORK_ERRORS as error:
             self._note(host, proxy, ok=False)
             self._last_error = f"{type(error).__name__}: {error}"
             return None
-        self._note(
-            host, proxy, ok=True, latency_ms=int((time.monotonic() - started) * 1000)
-        )
-        return Fetched(
-            status=response.status_code,
-            content=response.content,
-            url=str(response.url),
-            proxy=proxy,
-            elapsed=time.monotonic() - started,
-            headers=dict(response.headers),
-        )
+        finally:
+            self._release_client(proxy)
 
     async def fetch(
         self,

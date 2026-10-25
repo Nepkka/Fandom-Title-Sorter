@@ -95,7 +95,6 @@ class SuggestionPayload(BaseModel):
 
 
 def _forget_known_unmatched(db: Database) -> None:
-    """Убрать из неизвестных те те, что словарь уже знает."""
     fandom_map = FandomMap(db.load_rules())
     known = [
         item["tag"]
@@ -292,11 +291,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
+        return {"ok": True}
+
+    @app.get("/api/status", dependencies=[Depends(check_token)])
+    async def status() -> dict[str, Any]:
+        saucenao_routes = pool.routes_for("saucenao.com")
         return {
             "ok": True,
             "rules": db.rule_count(),
             "proxies": pool.summary(),
-            "saucenao_budget_left": limiter.budget.remaining("direct"),
+            "saucenao_budget_left": limiter.remaining_total(saucenao_routes),
             "input_root": db.get_setting("input_root", settings.fts_input_root),
             "output_root": db.get_setting("output_root", settings.fts_output_root),
             "browser": browser.summary() if browser is not None else {"available": 0},
@@ -404,7 +408,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.get("/api/files", dependencies=[Depends(check_token)])
-    async def files(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    async def files(
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
         run_id = db.latest_run_id()
         if run_id is None:
             return {"items": [], "run_id": None}
@@ -565,7 +572,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"count": count, "revision": rules_revision(db.load_rules())}
 
     @app.get("/api/unmatched", dependencies=[Depends(check_token)])
-    async def unmatched(limit: int = 200) -> dict[str, Any]:
+    async def unmatched(limit: int = Query(default=200, ge=1, le=2000)) -> dict[str, Any]:
         return {"count": db.unmatched_count(), "items": db.unmatched_tags(limit=limit)}
 
     @app.post("/api/rules/from-tag", dependencies=[Depends(check_token)])
@@ -599,7 +606,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"count": count, "mode": payload.mode, "tag": payload.tag}
 
     @app.get("/api/suggestions", dependencies=[Depends(check_token)])
-    async def get_suggestions(limit: int = 200) -> dict[str, Any]:
+    async def get_suggestions(
+        limit: int = Query(default=200, ge=1, le=2000),
+    ) -> dict[str, Any]:
         return {"count": db.suggestion_count(), "items": db.suggestions(limit=limit)}
 
     @app.post("/api/suggestions/merge", dependencies=[Depends(check_token)])
@@ -774,7 +783,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"restored": source, "from": target}
 
     @app.get("/api/journal", dependencies=[Depends(check_token)])
-    async def journal(limit: int = 20) -> dict[str, Any]:
+    async def journal(limit: int = Query(default=20, ge=1, le=200)) -> dict[str, Any]:
         return {"runs": db.journal_runs(limit=limit), "queued": db.queue_size()}
 
     @app.post("/api/journal/{run_id}/undo", dependencies=[Depends(check_token)])

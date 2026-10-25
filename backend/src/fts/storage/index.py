@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from heapq import nsmallest
+
 from ..storage.db import Database
 from ..storage.paths import hamming
 
@@ -19,11 +21,18 @@ class PhashIndex:
         if phash is not None:
             self._entries.append((phash, image_id))
 
-    def nearest(self, phash: int, max_distance: int = 6) -> list[tuple[int, int]]:
-        found = []
-        for stored, image_id in self._entries:
-            distance = hamming(stored, phash)
-            if distance <= max_distance:
-                found.append((image_id, distance))
-        found.sort(key=lambda item: item[1])
-        return found
+    def nearest(
+        self, phash: int, max_distance: int = 6, limit: int | None = None
+    ) -> list[tuple[int, int]]:
+        size = limit if limit is not None else len(self._entries)
+        if size <= 0:
+            return []
+        found = (
+            (distance, image_id)
+            for stored, image_id in self._entries
+            if (distance := hamming(stored, phash)) <= max_distance
+        )
+        return [
+            (image_id, distance)
+            for distance, image_id in nsmallest(size, found, key=lambda item: item[0])
+        ]

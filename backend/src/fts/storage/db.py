@@ -286,7 +286,6 @@ class Database:
         return int(row["id"]) if row else None
 
     def latest_run_id(self) -> str | None:
-        """Идентификатор последней сортировки, в которой принимались решения."""
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT run_id FROM decisions WHERE run_id IS NOT NULL "
@@ -733,7 +732,6 @@ class Database:
         return [row["key"] for row in rows]
 
     def stale_proxies(self, host: str, limit: int, older_than: float) -> list[str]:
-        """Прокси, которые работали, но проверялись давно: их пора перепроверить."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -749,7 +747,6 @@ class Database:
         return [row["key"] for row in rows]
 
     def untested_proxies_any(self, limit: int) -> list[str]:
-        """Прокси, которые не проверялись ни против одного хоста."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -765,7 +762,6 @@ class Database:
         return [row["key"] for row in rows]
 
     def stale_proxies_any(self, limit: int, older_than: float) -> list[str]:
-        """Прокси, у которых хотя бы для одного хоста проверка устарела."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -799,7 +795,6 @@ class Database:
         return int(row["n"])
 
     def drop_dead_proxies(self) -> int:
-        """Убрать прокси, которые ни разу не прошли ни на одном хосте."""
         with self.connect() as connection:
             dead = (
                 "SELECT proxy_key FROM proxy_stats GROUP BY proxy_key HAVING SUM(ok) = 0"

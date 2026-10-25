@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 
 import httpx
+from PIL import Image
 
 from ..config import Settings
 from ..storage.db import Database
@@ -16,6 +19,12 @@ from .sources import SOURCES, ProxyRecord, ProxySource, SourceFormat, dedupe, pa
 
 logger = logging.getLogger(__name__)
 
+SAUCENAO_HOST = "saucenao.com"
+
+SAUCENAO_SEARCH_URL = "https://saucenao.com/search.php"
+
+SAUCENAO_PROBE_SIZE = 128
+
 VALIDATION_TARGETS: dict[str, str] = {
     "danbooru.donmai.us": "https://danbooru.donmai.us/posts.json?limit=1",
     "gelbooru.com": "https://gelbooru.com/index.php?page=dapi&s=post&q=index&limit=1&json=1",
@@ -23,7 +32,7 @@ VALIDATION_TARGETS: dict[str, str] = {
     "konachan.com": "https://konachan.com/post.json?limit=1",
     "e-shuushuu.net": "https://e-shuushuu.net/",
     "www.zerochan.net": "https://www.zerochan.net/",
-    "saucenao.com": "https://saucenao.com/",
+    SAUCENAO_HOST: SAUCENAO_SEARCH_URL,
     "iqdb.org": "https://iqdb.org/",
     "api.trace.moe": "https://api.trace.moe/me",
 }
@@ -31,6 +40,31 @@ VALIDATION_TARGETS: dict[str, str] = {
 VALIDATION_SKIP: frozenset[str] = frozenset({"danbooru.donmai.us", "gelbooru.com"})
 
 SUPPORTED_SCHEMES = frozenset({"http", "https", "socks5", "socks5h"})
+
+
+@lru_cache(maxsize=1)
+def saucenao_probe_image() -> bytes:
+    buffer = io.BytesIO()
+    image = Image.new("RGB", (SAUCENAO_PROBE_SIZE, SAUCENAO_PROBE_SIZE))
+    pixels = image.load()
+    for x in range(SAUCENAO_PROBE_SIZE):
+        for y in range(SAUCENAO_PROBE_SIZE):
+            pixels[x, y] = (
+                (x * 2) % 256,
+                (y * 2) % 256,
+                ((x + y) * 2) % 256,
+            )
+    image.save(buffer, "JPEG", quality=80)
+    return buffer.getvalue()
+
+
+def saucenao_search_works(response: httpx.Response) -> bool:
+    if response.status_code != 200:
+        return False
+    text = response.text.lower()
+    blocked = ("daily search limit", "search rate too high", "just a moment", "cf-mitigated")
+    return not any(marker in text for marker in blocked)
+
 
 PROXY_STALE_AFTER = 3600.0
 
@@ -156,6 +190,20 @@ class ProxyPool:
         rest = [key for key in fresh if usable_proxy(key) and key not in known]
         return stale + rest[: max(0, limit - len(stale))]
 
+    async def _send(
+        self,
+        client: httpx.AsyncClient,
+        host: str,
+        target: str,
+    ) -> httpx.Response:
+        if host != SAUCENAO_HOST:
+            return await client.get(target)
+        return await client.post(
+            target,
+            data={"db": "999", "numres": "4", "output_type": "0"},
+            files={"file": ("image.jpg", saucenao_probe_image(), "image/jpeg")},
+        )
+
     async def _check(
         self,
         proxy: str,
@@ -175,12 +223,15 @@ class ProxyPool:
                     follow_redirects=True,
                 ) as client:
                     response = await asyncio.wait_for(
-                        client.get(target), timeout=self._settings.proxy_check_timeout
+                        self._send(client, host, target),
+                        timeout=self._settings.proxy_check_timeout,
                     )
             except NETWORK_ERRORS:
                 return CheckResult(proxy, host, False, None, False)
             latency = int((time.monotonic() - started) * 1000)
             ok = response.status_code == 200
+            if ok and host == SAUCENAO_HOST:
+                ok = saucenao_search_works(response)
             return CheckResult(proxy, host, ok, latency if ok else None, True)
 
     async def validate(
@@ -418,9 +469,11 @@ class ProxyPool:
                 headers={"User-Agent": self._settings.fts_user_agent},
                 follow_redirects=True,
             ) as client:
-                response = await client.get(target)
+                response = await self._send(client, host, target)
         except httpx.HTTPError:
             return False
+        if host == SAUCENAO_HOST:
+            return saucenao_search_works(response)
         return response.status_code == 200
     async def harvest(
         self,

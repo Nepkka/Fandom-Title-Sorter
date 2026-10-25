@@ -102,9 +102,9 @@ onMounted(load)
         <div v-if="settings" class="muted limits">
           <div>запросов к одному хосту за раз: {{ settings.limits.per_host_concurrency }}</div>
           <div>
-            SauceNAO: не больше {{ settings.limits.saucenao_per_window }} запросов за
-            {{ settings.limits.saucenao_window_seconds }} с с одного адреса,
-            {{ settings.limits.saucenao_daily_budget_per_ip }} в сутки
+            SauceNAO: стартовое окно — {{ settings.limits.saucenao_per_window }} запросов за
+            {{ settings.limits.saucenao_window_seconds }} с на адрес (прямой или прокси),
+            {{ settings.limits.saucenao_daily_budget_per_ip }} в сутки на адрес
           </div>
         </div>
       </div>
